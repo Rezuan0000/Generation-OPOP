@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Генератор ОПОП ВО - Шаг 1</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        
+        .step-indicator {
+            display: flex;
+            justify-content: center;
+            padding: 20px 30px 0 30px;
+            background: white;
+        }
+        
+        .step {
+            flex: 1;
+            text-align: center;
+            position: relative;
+            padding: 10px;
+        }
+        
+        .step-number {
+            width: 30px;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #666;
+        }
+        
+        .step.active .step-number {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .step-label {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .step.active .step-label {
+            color: #667eea;
+            font-weight: bold;
+        }
+        
+        .form-container {
+            padding: 40px;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        label .required {
+            color: #e74c3c;
+            margin-left: 4px;
+        }
+        
+        input[type="text"],
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .file-input {
+            border: 2px dashed #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.3s;
+        }
+        
+        .file-input:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        
+        .file-input input[type="file"] {
+            display: none;
+        }
+        
+        .file-label {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .file-icon {
+            font-size: 40px;
+        }
+        
+        .file-name {
+            color: #667eea;
+            font-weight: 600;
+        }
+        
+        .file-hint {
+            color: #999;
+            font-size: 14px;
+        }
+        
+        .direction-select {
+            background: #f8f9ff;
+            border: 2px solid #667eea;
+        }
+        
+        .btn-next {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .btn-next:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-next:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .error {
+            background: #fee;
+            color: #c00;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .info {
+            background: #e7f3ff;
+            color: #0066cc;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+        
+        .info ul {
+            margin-top: 10px;
+            margin-left: 20px;
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 20px;
+            background: #f9f9f9;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        @media (max-width: 768px) {
+            .form-container {
+                padding: 25px;
+            }
+            
+            .header h1 {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Генератор ОПОП ВО</h1>
+            <p>Автоматическое формирование основной профессиональной образовательной программы</p>
+        </div>
+        
+        <div class="step-indicator">
+            <div class="step active">
+                <div class="step-number">1</div>
+                <div class="step-label">Загрузка данных</div>
+            </div>
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-label">Заполнение параметров</div>
+            </div>
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-label">Генерация</div>
+            </div>
+        </div>
+        
+        <div class="form-container">
+            <form id="uploadForm">
+                <!-- Поле для загрузки первого файла БД -->
+                <div class="form-group">
+                    <label for="sql_file1">Файл структуры базы данных <span class="required">*</span></label>
+                    <div class="file-input" onclick="document.getElementById('sql_file1').click()">
+                        <input type="file" id="sql_file1" name="sql_file1" accept=".sql" required>
+                        <div class="file-label">
+                            <span class="file-icon">📁</span>
+                            <span id="file1-name" class="file-name">Выберите файл</span>
+                            <span class="file-hint">SQL файл со структурой таблиц</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Поле для загрузки второго файла БД -->
+                <div class="form-group">
+                    <label for="sql_file2">Файл с данными <span class="required">*</span></label>
+                    <div class="file-input" onclick="document.getElementById('sql_file2').click()">
+                        <input type="file" id="sql_file2" name="sql_file2" accept=".sql" required>
+                        <div class="file-label">
+                            <span class="file-icon">📁</span>
+                            <span id="file2-name" class="file-name">Выберите файл</span>
+                            <span class="file-hint">SQL файл с данными</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Поле выбора уровня образования -->
+                <div class="form-group">
+                    <label for="education_level">Уровень образования <span class="required">*</span></label>
+                    <select id="education_level" name="education_level" required>
+                        <option value="">Выберите уровень образования</option>
+                        <option value="bachelor">Бакалавриат</option>
+                        <option value="master">Магистратура</option>
+                        <option value="postgraduate">Аспирантура</option>
+                    </select>
+                </div>
+                
+                <!-- Поле выбора кода и профиля направления -->
+                <div class="form-group">
+                    <label for="direction">Код и профиль направления <span class="required">*</span></label>
+                    <select id="direction" name="direction" class="direction-select" required>
+                        <option value="">Выберите направление подготовки</option>
+                        <option value="01.03.02|Прикладная математика и информатика">01.03.02 Прикладная математика и информатика</option>
+                        <option value="01.03.02|Программирование, анализ данных и математическое моделирование" selected>01.03.02 Программирование, анализ данных и математическое моделирование</option>
+                        <option value="01.04.02|Прикладная математика и информатика (магистратура)">01.04.02 Прикладная математика и информатика (магистратура)</option>
+                        <option value="02.03.01|Математика и компьютерные науки">02.03.01 Математика и компьютерные науки</option>
+                        <option value="02.04.01|Математика и компьютерные науки (магистратура)">02.04.01 Математика и компьютерные науки (магистратура)</option>
+                        <option value="09.03.01|Информатика и вычислительная техника">09.03.01 Информатика и вычислительная техника</option>
+                        <option value="09.04.01|Информатика и вычислительная техника (магистратура)">09.04.01 Информатика и вычислительная техника (магистратура)</option>
+                        <option value="01.06.01|Математика и механика (аспирантура)">01.06.01 Математика и механика (аспирантура)</option>
+                        <option value="09.06.01|Информатика и вычислительная техника (аспирантура)">09.06.01 Информатика и вычислительная техника (аспирантура)</option>
+                    </select>
+                </div>
+                
+                <!-- Поле выбора года шаблона -->
+                <div class="form-group">
+                    <label for="template_year">Год шаблона <span class="required">*</span></label>
+                    <select id="template_year" name="template_year" required>
+                        <option value="">Выберите год шаблона</option>
+                        <option value="2021">2021</option>
+                        <option value="2022">2022</option>
+                        <option value="2023" selected>2023</option>
+                        <option value="2024">2024</option>
+                        <option value="2025">2025</option>
+                    </select>
+                </div>
+                
+                <button type="button" class="btn-next" id="nextBtn">
+                    <span id="btn-text">Далее</span>
+                </button>
+            </form>
+            
+            <div class="error" id="error"></div>
+            
+            <div class="info">
+                <strong>ℹ️ Информация:</strong>
+                <ul>
+                    <li>Загрузите два SQL файла: структуру базы данных и файл с данными</li>
+                    <li>Выберите уровень образования: бакалавриат, магистратура или аспирантура</li>
+                    <li>Выберите код и профиль направления подготовки из списка</li>
+                    <li>Укажите год шаблона для генерации документа</li>
+                    <li>После нажатия "Далее" перейдите к заполнению параметров документа</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>© 2024 Генератор ОПОП. Версия 2.0</p>
+        </div>
+    </div>
+    
+    <script>
+        // Обновление имени файла при выборе
+        function updateFileName(input, spanId) {
+            const span = document.getElementById(spanId);
+            if (input.files.length > 0) {
+                span.textContent = input.files[0].name;
+            } else {
+                span.textContent = 'Выберите файл';
+            }
+        }
+        
+        // Обработчики выбора файлов
+        document.getElementById('sql_file1').addEventListener('change', function() {
+            updateFileName(this, 'file1-name');
+        });
+        
+        document.getElementById('sql_file2').addEventListener('change', function() {
+            updateFileName(this, 'file2-name');
+        });
+        
+        // Валидация формы
+        function validateForm() {
+            const errors = [];
+            
+            const sqlFile1 = document.getElementById('sql_file1').files[0];
+            const sqlFile2 = document.getElementById('sql_file2').files[0];
+            const educationLevel = document.getElementById('education_level').value;
+            const direction = document.getElementById('direction').value;
+            const templateYear = document.getElementById('template_year').value;
+            
+            if (!sqlFile1) {
+                errors.push('Пожалуйста, выберите файл со структурой базы данных');
+            }
+            
+            if (!sqlFile2) {
+                errors.push('Пожалуйста, выберите файл с данными');
+            }
+            
+            if (!educationLevel) {
+                errors.push('Пожалуйста, выберите уровень образования');
+            }
+            
+            if (!direction) {
+                errors.push('Пожалуйста, выберите направление подготовки');
+            }
+            
+            if (!templateYear) {
+                errors.push('Пожалуйста, выберите год шаблона');
+            }
+            
+            return errors;
+        }
+        
+        // Обработчик кнопки "Далее"
+        document.getElementById('nextBtn').addEventListener('click', function() {
+            const errors = validateForm();
+            
+            if (errors.length > 0) {
+                const errorDiv = document.getElementById('error');
+                errorDiv.style.display = 'block';
+                errorDiv.innerHTML = errors.join('<br>');
+                return;
+            }
+            
+            // Сохраняем данные формы в localStorage
+            const formData = {
+                sql_file1_name: document.getElementById('sql_file1').files[0].name,
+                sql_file2_name: document.getElementById('sql_file2').files[0].name,
+                education_level: document.getElementById('education_level').value,
+                direction: document.getElementById('direction').value,
+                template_year: document.getElementById('template_year').value
+            };
+            
+            // Для файлов используем FileReader для сохранения в localStorage
+            const sqlFile1 = document.getElementById('sql_file1').files[0];
+            const sqlFile2 = document.getElementById('sql_file2').files[0];
+            
+            const reader1 = new FileReader();
+            const reader2 = new FileReader();
+            
+            let loadedCount = 0;
+            
+            function checkAndRedirect() {
+                loadedCount++;
+                if (loadedCount === 2) {
+                    // Перенаправляем на страницу заполнения параметров
+                    window.location.href = '/parameters';
+                }
+            }
+            
+            reader1.onload = function(e) {
+                localStorage.setItem('sql_file1_content', e.target.result);
+                localStorage.setItem('sql_file1_name', sqlFile1.name);
+                checkAndRedirect();
+            };
+            
+            reader2.onload = function(e) {
+                localStorage.setItem('sql_file2_content', e.target.result);
+                localStorage.setItem('sql_file2_name', sqlFile2.name);
+                checkAndRedirect();
+            };
+            
+            // Сохраняем остальные данные
+            localStorage.setItem('education_level', formData.education_level);
+            localStorage.setItem('direction', formData.direction);
+            localStorage.setItem('template_year', formData.template_year);
+            
+            // Разделяем код и профиль
+            const [code, profile] = formData.direction.split('|');
+            localStorage.setItem('speciality_code', code);
+            localStorage.setItem('profile', profile);
+            
+            // Читаем файлы
+            reader1.readAsText(sqlFile1);
+            reader2.readAsText(sqlFile2);
+        });
+        
+        // Убираем ошибку при изменении полей
+        const fields = ['sql_file1', 'sql_file2', 'education_level', 'direction', 'template_year'];
+        fields.forEach(fieldId => {
+            const element = document.getElementById(fieldId);
+            if (element) {
+                element.addEventListener('change', () => {
+                    document.getElementById('error').style.display = 'none';
+                });
+            }
+        });
+    </script>
+</body>
+</html>
