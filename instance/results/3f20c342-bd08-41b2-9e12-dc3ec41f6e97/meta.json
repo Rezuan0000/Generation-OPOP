@@ -1,0 +1,12 @@
+{
+  "job_id": "3f20c342-bd08-41b2-9e12-dc3ec41f6e97",
+  "upload_id": "bcae3842-94ee-45db-b70a-cde9517a5bf1",
+  "created_at": "2026-03-31T11:25:14.797097+00:00",
+  "params": {
+    "year": 2023,
+    "speciality_code": "01.03.02",
+    "edu_level_id": 1
+  },
+  "json_path": "E:\\Проектная практика ОПОП\\Практика ОПОП\\instance\\results\\3f20c342-bd08-41b2-9e12-dc3ec41f6e97\\opop_data.json",
+  "docx_path": "E:\\Проектная практика ОПОП\\Практика ОПОП\\instance\\results\\3f20c342-bd08-41b2-9e12-dc3ec41f6e97\\ОПОП.docx"
+}

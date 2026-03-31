@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}ОПОП Генератор — Параметры{% endblock %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-lg-10">
+      <div class="card overflow-hidden">
+        <div class="p-4 header-grad">
+          <div class="fs-4 fw-semibold">Параметры генерации</div>
+          <div class="opacity-75 mt-1 small">
+            Значения берутся из загруженных SQL файлов. Выберите уровень обучения и направление.
+          </div>
+        </div>
+        <div class="p-4 p-lg-5">
+          <form method="post" action="{{ url_for('generate', upload_id=upload_id) }}">
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label fw-semibold">Вариант обучения</label>
+                <select class="form-select" name="edu_level_id" id="eduLevelSelect" required>
+                  {% for lvl in levels %}
+                    <option value="{{ lvl.id }}">{{ lvl.title }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label fw-semibold">Год набора</label>
+                <input class="form-control" type="number" name="year" value="{{ default_year }}" min="1990" max="2100" required />
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label fw-semibold">Код и название направления</label>
+                <select class="form-select" name="speciality_code" id="specialitySelect" required></select>
+                <div class="form-text">Список ограничен выбранным вариантом обучения.</div>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-between mt-4">
+              <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Назад</a>
+              <button class="btn btn-success px-4" type="submit">Далее (генерация)</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="small text-muted mt-3">
+        После нажатия “Далее” будет создан <span class="mono">opop_data.json</span> и документ <span class="mono">.docx</span> по <span class="mono">template.docx</span>.
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const dirsByLevel = {{ dirs_by_level | tojson }};
+    const eduLevelSelect = document.getElementById("eduLevelSelect");
+    const specialitySelect = document.getElementById("specialitySelect");
+
+    function renderSpecialities(levelId) {
+      const items = dirsByLevel[levelId] || [];
+      specialitySelect.innerHTML = "";
+
+      if (!items.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "Нет направлений для выбранного уровня";
+        specialitySelect.appendChild(opt);
+        specialitySelect.disabled = true;
+        return;
+      }
+
+      specialitySelect.disabled = false;
+      for (const item of items) {
+        const opt = document.createElement("option");
+        opt.value = item.code;
+        const profile = item.profile ? ` — профиль: ${item.profile}` : "";
+        opt.textContent = `${item.code} — ${item.title}${profile}`;
+        specialitySelect.appendChild(opt);
+      }
+    }
+
+    eduLevelSelect.addEventListener("change", () => renderSpecialities(eduLevelSelect.value));
+    renderSpecialities(eduLevelSelect.value);
+  </script>
+{% endblock %}
+

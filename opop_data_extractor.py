@@ -39,6 +39,7 @@ def _query_one_str(cur, sql: str, params: tuple = ()) -> Optional[str]:
 class ExtractParams:
     year: int
     speciality_code: str
+    edu_level_id: int = 1
 
 
 def _build_activities() -> dict[str, str]:
@@ -68,15 +69,15 @@ def build_opop_data(structure_sql_path: str, data_sql_path: str, *, params: Extr
 
     cur = processor.conn.cursor()
 
-    # 1) Направление (берем бакалавриат: edu_level_id = 1)
+    # 1) Направление (фильтруем по уровню обучения)
     cur.execute(
         """
         SELECT id, code, title, profile
         FROM speciality
-        WHERE code = ? AND edu_level_id = 1
+        WHERE code = ? AND edu_level_id = ?
         LIMIT 1
         """,
-        (params.speciality_code,),
+        (params.speciality_code, params.edu_level_id),
     )
     spec_row = cur.fetchone()
     if not spec_row:
@@ -348,6 +349,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--data", default="dump.sql", help="SQL с данными (INSERT ...)")
     p.add_argument("--year", type=int, default=2023, help="Год набора (title_plan.date_enter)")
     p.add_argument("--code", default="01.03.02", help="Код направления (speciality.code)")
+    p.add_argument("--level-id", type=int, default=1, help="Уровень обучения (speciality.edu_level_id)")
     p.add_argument("--out-json", default="opop_data.json", help="Путь для сохранения JSON файла")
     return p.parse_args()
 
@@ -357,7 +359,7 @@ if __name__ == "__main__":
     OPOP_DATA: dict[str, str] = build_opop_data(
         args.structure,
         args.data,
-        params=ExtractParams(year=args.year, speciality_code=args.code),
+        params=ExtractParams(year=args.year, speciality_code=args.code, edu_level_id=args.level_id),
     )
     
     # Сохраняем в JSON файл
