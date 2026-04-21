@@ -11,11 +11,13 @@
 ## Требования
 
 - Python 3.9+ (проект проверялся и на Python 3.13)
-- Зависимость:
+- Зависимости:
 
 ```bash
-pip install python-docx
+pip install python-docx pypandoc
 ```
+
+Также нужен установленный `pandoc`: [https://pandoc.org/installing.html](https://pandoc.org/installing.html)
 
 ## Как подготовить шаблон `template.docx`
 
@@ -30,6 +32,45 @@ pip install python-docx
 
 Полный список ключей смотрите в `opop_data.py` (словарь `OPOP_DATA`).
 
+### Динамические таблицы (маркеры)
+
+В шаблоне можно делать повторяющиеся строки таблиц через маркеры:
+
+- `{{START_TABLE:universal}}` / `{{END_TABLE:universal}}` — таблица УК
+- `{{START_TABLE:professional}}` / `{{END_TABLE:professional}}` — таблица ОПК
+- `{{START_TABLE:prof_standards}}` / `{{END_TABLE:prof_standards}}` — таблица профстандартов (2 столбца: область + стандарт)
+- `{{START_TABLE:pk}}` / `{{END_TABLE:pk}}` — таблица ПК (тип задач + ПК + индикаторы)
+
+Для таблиц, разбитых на секции (как 06/40 и activity_1..activity_3), используйте секционные маркеры:
+
+- профстандарты:
+  - `{{START_TABLE:prof_standards:06}}` / `{{END_TABLE:prof_standards:06}}`
+  - `{{START_TABLE:prof_standards:40}}` / `{{END_TABLE:prof_standards:40}}`
+- ПК:
+  - `{{START_TABLE:pk:activity_1}}` / `{{END_TABLE:pk:activity_1}}`
+  - `{{START_TABLE:pk:activity_2}}` / `{{END_TABLE:pk:activity_2}}`
+  - `{{START_TABLE:pk:activity_3}}` / `{{END_TABLE:pk:activity_3}}`
+
+Структурированные поля в `opop_data.json`:
+
+- `prof_standards_table`: массив объектов `{ "area": "...", "standard": "..." }`
+- `prof_standards_table`: массив объектов
+  `{ "area_code": "06|40", "area": "...", "standard": "...", "generalized_functions": "..." }`
+- `pk_table`: массив объектов
+  `{ "task_type_key": "activity_1|activity_2|activity_3", "task_type": "...", "pk_code": "...", "pk_description": "...", "indicators": "..." }`
+
+### Ручной ввод перед финальной генерацией (Flask)
+
+В шаблоне можно вставить метки вида `{{MANUAL:имя_поля}}`, где `имя_поля` — латиница, цифры и подчёркивание (например `{{MANUAL:normative_docs}}`).
+
+- После выбора параметров и нажатия «Далее (генерация)» приложение строит черновик документа (данные из БД подставлены, метки `{{MANUAL:…}}` остаются) и показывает **HTML-предпросмотр с полями ввода** вместо этих меток.
+- Кнопка **«Создать документ»** формирует итоговый `ОПОП.docx` с подставленным текстом и переводит на страницу скачивания.
+- **PDF** на финальной странице создаётся **по кнопке** «Создать PDF для просмотра», а не автоматически.
+
+Важно: метку `{{MANUAL:…}}` лучше держать **в одном абзаце/ячейке целиком**, иначе Word может разбить её на части и подстановка не сработает.
+
+В `opop_data.json` значения хранятся в объекте `manual_fields`, например: `"manual_fields": { "normative_docs": "..." }`.
+
 ## Как сгенерировать документ
 
 Запуск из папки проекта:
@@ -42,6 +83,8 @@ python generate_opop.py
 
 - входной шаблон: `template.docx`
 - выходной файл: `ОПОП-ПМ_тестовый.docx`
+
+Во Flask-приложении после генерации документ дополнительно конвертируется в HTML через `pypandoc` для отображения полного предпросмотра в браузере.
 
 Если нужно указать пути программно, используйте функцию:
 

@@ -1,2 +1,5 @@
 flask
 python-docx
+pypandoc
+pytinytex
+docx2pdf

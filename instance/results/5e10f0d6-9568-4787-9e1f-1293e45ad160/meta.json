@@ -1,0 +1,23 @@
+{
+  "job_id": "5e10f0d6-9568-4787-9e1f-1293e45ad160",
+  "upload_id": "fd0be4ad-d503-4fb7-87a5-3cafe147aae4",
+  "created_at": "2026-04-21T10:35:13.849368+00:00",
+  "params": {
+    "year": 2023,
+    "speciality_code": "01.03.01",
+    "edu_level_id": 1
+  },
+  "json_path": "E:\\Проектная практика ОПОП\\Git_Protect\\Generation-OPOP\\instance\\results\\5e10f0d6-9568-4787-9e1f-1293e45ad160\\opop_data.json",
+  "draft_docx_path": "E:\\Проектная практика ОПОП\\Git_Protect\\Generation-OPOP\\instance\\results\\5e10f0d6-9568-4787-9e1f-1293e45ad160\\document_draft.docx",
+  "docx_path": "E:\\Проектная практика ОПОП\\Git_Protect\\Generation-OPOP\\instance\\results\\5e10f0d6-9568-4787-9e1f-1293e45ad160\\ОПОП.docx",
+  "html_preview_path": "E:\\Проектная практика ОПОП\\Git_Protect\\Generation-OPOP\\instance\\results\\5e10f0d6-9568-4787-9e1f-1293e45ad160\\preview.html",
+  "edit_preview_path": "E:\\Проектная практика ОПОП\\Git_Protect\\Generation-OPOP\\instance\\results\\5e10f0d6-9568-4787-9e1f-1293e45ad160\\edit_preview.html",
+  "pdf_preview_path": "E:\\Проектная практика ОПОП\\Git_Protect\\Generation-OPOP\\instance\\results\\5e10f0d6-9568-4787-9e1f-1293e45ad160\\preview.pdf",
+  "pdf_error": null,
+  "manual_keys": [
+    "normative_docs",
+    "subject_areas",
+    "activity_extra_1"
+  ],
+  "stage": "final"
+}

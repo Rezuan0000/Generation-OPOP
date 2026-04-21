@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from sql_processor import SQLProcessor
 
@@ -56,7 +56,7 @@ def _build_activities() -> dict[str, str]:
     }
 
 
-def build_opop_data(structure_sql_path: str, data_sql_path: str, *, params: ExtractParams) -> dict[str, str]:
+def build_opop_data(structure_sql_path: str, data_sql_path: str, *, params: ExtractParams) -> dict[str, Any]:
     processor = SQLProcessor()
 
     ok, msg = processor.load_sql_file(structure_sql_path)
@@ -273,8 +273,70 @@ def build_opop_data(structure_sql_path: str, data_sql_path: str, *, params: Extr
     # Формируем активности (activity_1, activity_2, activity_3) - только названия
     activities = _build_activities()
 
+    # Таблица профстандартов (2 столбца: область <-> профстандарт)
+    prof_standards_table: list[dict[str, str]] = [
+        {
+            "area_code": "06",
+            "area": (
+                "06 Связь, информационные и коммуникационные технологии "
+                "(в сфере проектирования, разработки и тестирования программного обеспечения, "
+                "в сфере разработки и обслуживания информационных систем)"
+            ),
+            # Для таблицы профстандартов используем краткое наименование (как в методичке).
+            "standard": "06.001. Программист",
+            "generalized_functions": (
+                "D. Разработка требований и проектирование программного обеспечения"
+            ),
+        },
+        {
+            "area_code": "06",
+            "area": (
+                "06 Связь, информационные и коммуникационные технологии "
+                "(в сфере проектирования, разработки и тестирования программного обеспечения, "
+                "в сфере разработки и обслуживания информационных систем)"
+            ),
+            "standard": "06.015. Специалист по информационным системам",
+            "generalized_functions": (
+                "C. Выполнение работ и управление работами по созданию (модификации) и сопровождению ИС, автоматизирующих задачи организационного управления и бизнес-процессы"
+            ),
+        },
+        {
+            "area_code": "40",
+            "area": (
+                "40 Сквозные виды профессиональной деятельности в промышленности "
+                "(в сфере научно-исследовательских разработок и опытно-конструкторских разработок)"
+            ),
+            "standard": "40.011. Специалист по научно-исследовательским и опытно-конструкторским разработкам",
+            "generalized_functions": (
+                "A. Проведение научно-исследовательских и опытно-конструкторских разработок по отдельным разделам темы"
+            ),
+        },
+    ]
+
+    # Таблица ПК по типам задач профдеятельности.
+    # Пока это "умная заглушка": распределяем ПК по активностям по кругу,
+    # пока в БД не появится явная связь ПК <-> тип задач.
+    activity_titles = [activities.get("activity_1", ""), activities.get("activity_2", ""), activities.get("activity_3", "")]
+    activity_titles = [a for a in activity_titles if a]
+    if not activity_titles:
+        activity_titles = ["Не указан тип задач профессиональной деятельности"]
+    pk_table: list[dict[str, str]] = []
+    for idx, (code, desc) in enumerate(pk_competencies_list):
+        task_idx = idx % len(activity_titles)
+        task = activity_titles[task_idx]
+        task_key = f"activity_{task_idx + 1}"
+        pk_table.append(
+            {
+                "task_type_key": task_key,
+                "task_type": task,
+                "pk_code": code,
+                "pk_description": desc,
+                "indicators": "",
+            }
+        )
+
     # 5) Собираем финальный словарь
-    opop_data: dict[str, str] = {
+    opop_data: dict[str, Any] = {
         # Основные реквизиты
         "direction_code": direction_code,
         "direction_name": direction_name,
@@ -337,6 +399,9 @@ def build_opop_data(structure_sql_path: str, data_sql_path: str, *, params: Extr
             "(утвержден приказом Министерства труда и социальной защиты РФ "
             "от 4.03.2014 № 121н (ред. от 12.12.2016))"
         ),
+        # Новые структурированные поля для динамических таблиц
+        "prof_standards_table": prof_standards_table,
+        "pk_table": pk_table,
     }
 
     processor.close()
