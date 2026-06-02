@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}ОПОП Генератор — Загрузка{% endblock %}
+{% block title %}ОПОП Генератор — Старт{% endblock %}
 
 {% block content %}
   <div class="row justify-content-center">
@@ -7,37 +7,24 @@
       <div class="card overflow-hidden">
         <div class="p-4 header-grad">
           <div class="d-flex align-items-center gap-2">
-            <div class="fs-4 fw-semibold">Загрузка SQL файлов</div>
+            <div class="fs-4 fw-semibold">Генератор ОПОП</div>
           </div>
           <div class="opacity-75 mt-1 small">
-            Загрузите SQL со структурой и SQL с данными учебного плана.
+            Нажмите «Начать» — программа загрузит актуальные данные из учётной системы и предложит выбрать направление подготовки.
           </div>
         </div>
         <div class="p-4 p-lg-5">
-          <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
-            <div class="mb-4">
-              <label class="form-label fw-semibold">Файл структуры (SQL)</label>
-              <input class="form-control" type="file" name="sql_structure" accept=".sql,.txt" required />
-              <div class="form-text">CREATE TABLE и т.п.</div>
-            </div>
-            <div class="mb-4">
-              <label class="form-label fw-semibold">Файл данных (SQL)</label>
-              <input class="form-control" type="file" name="sql_content" accept=".sql,.txt" required />
-              <div class="form-text">INSERT INTO и т.п.</div>
-            </div>
-
-            <div class="d-flex justify-content-end">
-              <button class="btn btn-primary px-4" type="submit">Далее</button>
+          <form method="post" action="{{ url_for('upload') }}">
+            <div class="d-flex justify-content-center py-3">
+              <button class="btn btn-primary btn-lg px-5" type="submit">Начать</button>
             </div>
           </form>
-
-          <hr class="my-4" />
-          <div class="small text-muted">
-            Требуется файл шаблона <span class="mono">template.docx</span> в корне проекта (рядом с <span class="mono">app.py</span>).
-          </div>
         </div>
+      </div>
+
+      <div class="small text-muted mt-3">
+        Требуется файл шаблона <span class="mono">template.docx</span> в корне проекта (рядом с <span class="mono">app.py</span>).
       </div>
     </div>
   </div>
 {% endblock %}
-

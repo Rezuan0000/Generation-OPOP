@@ -14,16 +14,21 @@
 
 Ручной ввод (значения в JSON: manual_fields["ключ"]):
     {{MANUAL:ключ}}  — например {{MANUAL:normative_docs}}
+
+Подписи из БД (base64 в employee_signatures["ключ"]):
+    {{IMAGE:ключ}}  — например {{IMAGE:first_responsible}}, {{IMAGE:second_responsible}}
 """
 
+import base64
 import json
 import re
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
 from typing import Any
 
-from docx.shared import Pt
+from docx.shared import Pt, Cm
 from docx.enum.text import WD_BREAK
 from docx.oxml.ns import qn
 
@@ -33,12 +38,36 @@ from zipfile import BadZipFile
 # Ручной ввод в шаблоне: {{MANUAL:имя_поля}} (латиница, цифры, подчёркивание).
 MANUAL_PLACEHOLDER_RE = re.compile(r"\{\{MANUAL:([a-zA-Z0-9_]+)\}\}")
 
+# Подписи: {{IMAGE:имя}} — ключ совпадает с employee_signatures в opop_data.json.
+IMAGE_PLACEHOLDER_RE = re.compile(r"\{\{IMAGE:([a-zA-Z0-9_]+)\}\}")
+
+# Ширина вставляемой подписи по умолчанию (см).
+_DEFAULT_SIGNATURE_WIDTH_CM = 3.5
+
+# Символы, недопустимые в XML Word (python-docx).
+_INVALID_XML_CHAR_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufeff\ufffe\uffff]"
+)
+
+
+def _sanitize_xml_text(value: Any) -> str:
+    """Убирает управляющие и прочие символы, из‑за которых падает запись в .docx."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    return _INVALID_XML_CHAR_RE.sub("", value)
+
+# Ячейка с компетенцией из БД (УК/ОПК/ПК), без меток MANUAL — не очищаем при размножении строк.
+_COMPETENCY_FROM_DB_RE = re.compile(r"^\s*(УК|ОПК|ПК)-\d+\s*-", re.IGNORECASE)
+
 
 def _set_paragraph_text_preserve_first_run_style(paragraph, new_text: str) -> None:
     """
     Записывает новый текст в абзац и сохраняет базовый стиль первого run.
     Это уменьшает риск "скачка" шрифта после подстановки.
     """
+    new_text = _sanitize_xml_text(new_text)
     runs = list(paragraph.runs)
     if not runs:
         paragraph.add_run(new_text)
@@ -52,7 +81,7 @@ def _set_paragraph_text_preserve_first_run_style(paragraph, new_text: str) -> No
 
 def _normalize_manual_text(value: str) -> str:
     """Нормализует текст из textarea для вставки в Word."""
-    normalized = value.replace("\t", " ")
+    normalized = _sanitize_xml_text(value).replace("\t", " ")
     lines = normalized.replace("\r\n", "\n").replace("\r", "\n").splitlines()
     lines = [line.lstrip() for line in lines]
     return "\n".join(lines)
@@ -103,6 +132,28 @@ def _replace_manual_placeholders_in_row(table, row_idx: int, manual: dict[str, s
                 _set_paragraph_multiline_text_preserve_style(paragraph, replaced)
 
 
+def _cell_flat_text(cell) -> str:
+    return " ".join(p.text for p in cell.paragraphs)
+
+
+def _is_competency_cell_from_db(cell) -> bool:
+    t = _cell_flat_text(cell).strip()
+    if not t or MANUAL_PLACEHOLDER_RE.search(t):
+        return False
+    return bool(_COMPETENCY_FROM_DB_RE.match(t))
+
+
+def _clear_cell_text_keep_paragraphs(cell) -> None:
+    """Очищает текст в ячейке, не удаляя саму структуру ячейки/абзацев."""
+    for paragraph in cell.paragraphs:
+        if paragraph.runs:
+            paragraph.runs[0].text = ""
+            for run in paragraph.runs[1:]:
+                run._element.getparent().remove(run._element)
+        else:
+            paragraph.add_run("")
+
+
 def _expand_manual_rows_in_tables(doc: Document, manual: dict[str, str]) -> None:
     """
     Расширяет строки таблиц с {{MANUAL:key}}:
@@ -122,6 +173,11 @@ def _expand_manual_rows_in_tables(doc: Document, manual: dict[str, str]) -> None
             row_keys = {m.group(1) for m in matches}
             lines_by_key: dict[str, list[str]] = {k: _manual_lines(manual.get(k, "")) for k in row_keys}
             row_count = max((len(v) for v in lines_by_key.values()), default=1)
+            manual_cell_indexes = {
+                idx
+                for idx, cell in enumerate(row.cells)
+                if MANUAL_PLACEHOLDER_RE.search(" ".join(p.text for p in cell.paragraphs))
+            }
 
             if row_count <= 1:
                 # Нет размножения — обычная подстановка в текущую строку.
@@ -151,7 +207,38 @@ def _expand_manual_rows_in_tables(doc: Document, manual: dict[str, str]) -> None
                     key: (vals[offset] if offset < len(vals) else "")
                     for key, vals in lines_by_key.items()
                 }
-                _replace_manual_placeholders_in_row(table, start_idx + offset, row_values, row_keys)
+                current_row_index = start_idx + offset
+                _replace_manual_placeholders_in_row(table, current_row_index, row_values, row_keys)
+
+                # Для добавленных строк (offset > 0) очищаем "статические" столбцы
+                # без MANUAL-меток: так новые строки остаются в той же группе,
+                # но не дублируют соседние колонки.
+                if offset > 0 and manual_cell_indexes:
+                    current_row = table.rows[current_row_index]
+                    for cell_idx, cell in enumerate(current_row.cells):
+                        if cell_idx in manual_cell_indexes:
+                            continue
+                        if _is_competency_cell_from_db(cell):
+                            continue
+                        _clear_cell_text_keep_paragraphs(cell)
+
+            # Объединяем "статические" столбцы по вертикали на всю добавленную группу:
+            # первая строка группы остаётся содержательной, следующие визуально
+            # относятся к ней же и не создают самостоятельных записей.
+            if row_count > 1 and manual_cell_indexes:
+                top_row = table.rows[start_idx]
+                for cell_idx in range(len(top_row.cells)):
+                    if cell_idx in manual_cell_indexes:
+                        continue
+                    top_cell = table.rows[start_idx].cells[cell_idx]
+                    for merge_row_idx in range(start_idx + 1, start_idx + row_count):
+                        bottom_cell = table.rows[merge_row_idx].cells[cell_idx]
+                        try:
+                            top_cell = top_cell.merge(bottom_cell)
+                        except Exception:
+                            # Если merge невозможен из-за особенностей сетки таблицы,
+                            # не останавливаем генерацию всего документа.
+                            continue
 
             # Удаляем исходную шаблонную строку с плейсхолдерами.
             row._tr.getparent().remove(row._tr)
@@ -340,7 +427,7 @@ def _replace_table_range_with_rows(
         current_row = target_table.rows[row_idx]
         for col_idx, value in enumerate(values):
             if col_idx < len(current_row.cells):
-                current_row.cells[col_idx].text = value
+                current_row.cells[col_idx].text = _sanitize_xml_text(value)
 
 
 def _fill_table_section_rows(
@@ -354,8 +441,154 @@ def _fill_table_section_rows(
     )
     if target_table is None or template_row is None:
         return False
-    _replace_table_range_with_rows(target_table, template_row, template_row_index, end_row_index, rows_values)
+    _replace_table_range_with_rows(
+        target_table,
+        template_row,
+        template_row_index,
+        end_row_index,
+        rows_values,
+    )
     return True
+
+
+def _is_competencies_table_uk_opk(table) -> bool:
+    """
+    Эвристика: таблица УК/ОПК имеет 3 колонки и заголовки про категорию/компетенцию/индикатор.
+    Нужна, чтобы не трогать другие таблицы при слиянии.
+    """
+    try:
+        if not table.rows or len(table.rows[0].cells) < 3:
+            return False
+        header = " ".join(c.text for c in table.rows[0].cells[:3]).lower()
+        return ("категор" in header) and ("компетенц" in header) and ("индикатор" in header)
+    except Exception:
+        return False
+
+
+def _merge_vertical_category_groups(table, col_idx: int, start_row_idx: int) -> None:
+    """
+    Объединяет по вертикали ячейки столбца col_idx для таблиц УК/ОПК.
+
+    Правила:
+    - одинаковые подряд значения объединяются;
+    - пустая ячейка объединяется с группой над ней (то есть "прилипает" вверх),
+      даже если сверху непусто;
+    - после merge в объединённой ячейке остаётся только верхний текст (без дублей).
+
+    Доступ к ячейкам через table.cell(row, col): так корректна сетка при grid_before,
+    объединениях и строках с разным числом «видимых» ячеек в row.cells.
+    """
+    if not table.rows or start_row_idx >= len(table.rows):
+        return
+    try:
+        ncol = len(table.columns)
+    except Exception:
+        return
+    if col_idx >= ncol:
+        return
+
+    def _cell_at(row_idx: int):
+        try:
+            return table.cell(row_idx, col_idx)
+        except (IndexError, ValueError):
+            return None
+
+    group_start = start_row_idx
+    top = _cell_at(start_row_idx)
+    if top is None:
+        return
+    anchor_text = (top.text or "").strip()
+    anchor_is_empty = not anchor_text
+
+    for r in range(start_row_idx + 1, len(table.rows)):
+        cell = _cell_at(r)
+        if cell is None:
+            continue
+        text = (cell.text or "").strip()
+        is_empty = not text
+
+        # Пустые строки всегда относим к предыдущей группе.
+        # Непустые — сливаем только если совпадают с anchor_text.
+        should_merge = is_empty or (not anchor_is_empty and text == anchor_text) or (anchor_is_empty and is_empty)
+
+        if should_merge:
+            try:
+                top_cell = table.cell(group_start, col_idx)
+                top_text = (top_cell.text or "").strip()
+
+                # Важно: python-docx при merge часто "склеивает" тексты.
+                # Поэтому очищаем нижнюю ячейку перед merge и затем восстанавливаем верхний текст.
+                _clear_cell_text_keep_paragraphs(cell)
+                merged = top_cell.merge(cell)
+                # В merged оставляем только верхний текст (без дублей)
+                merged.text = top_text
+            except Exception:
+                pass
+            continue
+
+        # Начинаем новую группу
+        group_start = r
+        anchor_text = text
+        anchor_is_empty = not anchor_text
+
+
+def _merge_competencies_category_column_after_manual(doc: Document) -> None:
+    """
+    После подстановки manual_fields объединяет 1‑й столбец в таблицах УК/ОПК:
+    - пустые ячейки сливаются с группой над ними,
+    - одинаковые значения сливаются между собой,
+    - в итоговой объединённой ячейке остаётся один текст (верхний).
+    """
+    for table in doc.tables:
+        if not _is_competencies_table_uk_opk(table):
+            continue
+        # 0 — заголовок, 1.. — данные.
+        _merge_vertical_category_groups(table, col_idx=0, start_row_idx=1)
+
+
+def _is_pk_competencies_table(table) -> bool:
+    """
+    Эвристика: таблица ПК имеет минимум 5 столбцов и упоминает компетенции и индикаторы,
+    но не является таблицей ОПК (общепрофессиональные).
+    """
+    try:
+        if not table.rows:
+            return False
+        nc = len(table.columns)
+        if nc < 5:
+            return False
+        header_parts = []
+        for j in range(min(nc, 8)):
+            try:
+                header_parts.append(table.cell(0, j).text)
+            except Exception:
+                continue
+        header = " ".join(header_parts).lower()
+        if "общепрофессиональн" in header:
+            return False
+        return "индикатор" in header and "компетенц" in header
+    except Exception:
+        return False
+
+
+def _merge_pk_manual_category_columns_after_manual(doc: Document) -> None:
+    """
+    После подстановки manual_fields: для таблицы ПК объединяет столбцы 1, 2 и 5
+    (индексы 0, 1, 4) по тем же правилам, что категория в ОПК.
+    Столбец 4 (индикаторы ПК) не трогаем — как третий столбец ОПК.
+    """
+    for table in doc.tables:
+        try:
+            if not _is_pk_competencies_table(table):
+                continue
+            n = len(table.columns)
+            if n < 5:
+                continue
+            for col_idx in (0, 1, 4):
+                if col_idx < n:
+                    _merge_vertical_category_groups(table, col_idx=col_idx, start_row_idx=1)
+        except Exception:
+            continue
 
 
 def replace_placeholders_in_paragraphs(doc: Document, data: dict[str, str]) -> None:
@@ -367,7 +600,7 @@ def replace_placeholders_in_paragraphs(doc: Document, data: dict[str, str]) -> N
         for key, value in data.items():
             placeholder = f"{{{{{key}}}}}"  # из key делаем {{key}}
             if placeholder in new_text:
-                new_text = new_text.replace(placeholder, value)
+                new_text = new_text.replace(placeholder, _sanitize_xml_text(value))
         if new_text != paragraph.text:
             _set_paragraph_text_preserve_first_run_style(paragraph, new_text)
 
@@ -384,7 +617,7 @@ def replace_placeholders_in_tables(doc: Document, data: dict[str, str]) -> None:
                     for key, value in data.items():
                         placeholder = f"{{{{{key}}}}}"  # из key делаем {{key}}
                         if placeholder in new_text:
-                            new_text = new_text.replace(placeholder, value)
+                            new_text = new_text.replace(placeholder, _sanitize_xml_text(value))
                     if new_text != paragraph.text:
                         _set_paragraph_text_preserve_first_run_style(paragraph, new_text)
 
@@ -393,6 +626,147 @@ def replace_placeholders(doc: Document, data: dict[str, str]) -> None:
     """Общая функция замены меток во всём документе."""
     replace_placeholders_in_paragraphs(doc, data)
     replace_placeholders_in_tables(doc, data)
+
+
+def _decode_base64_image(data: str) -> bytes | None:
+    """Декодирует подпись из raw base64 или data:image/...;base64,..."""
+    if not data or not str(data).strip():
+        return None
+    s = str(data).strip()
+    payload = s
+    m = re.match(r"^data:image/[\w+.-]+;base64,(.+)$", s, re.IGNORECASE | re.DOTALL)
+    if m:
+        payload = m.group(1).strip()
+    payload = re.sub(r"\s+", "", payload)
+    if not payload:
+        return None
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception:
+        return None
+    return raw if raw else None
+
+
+def get_employee_signatures(opop_data: dict[str, Any]) -> dict[str, str]:
+    """Подписи сотрудников: сначала employee_signatures, иначе _api_snapshot."""
+    sigs = opop_data.get("employee_signatures")
+    if isinstance(sigs, dict):
+        return {str(k): str(v or "") for k, v in sigs.items()}
+    snapshot = opop_data.get("_api_snapshot")
+    if isinstance(snapshot, dict):
+        nested = snapshot.get("employee_signatures")
+        if isinstance(nested, dict):
+            return {str(k): str(v or "") for k, v in nested.items()}
+    return {}
+
+
+def _clear_paragraph_runs(paragraph) -> None:
+    for run in list(paragraph.runs):
+        run._element.getparent().remove(run._element)
+
+
+def _replace_image_placeholder_in_paragraph(
+    paragraph,
+    *,
+    key: str,
+    image_bytes: bytes,
+    width_cm: float = _DEFAULT_SIGNATURE_WIDTH_CM,
+) -> bool:
+    placeholder = f"{{{{IMAGE:{key}}}}}"
+    if placeholder not in (paragraph.text or ""):
+        return False
+    _clear_paragraph_runs(paragraph)
+    paragraph.add_run().add_picture(BytesIO(image_bytes), width=Cm(width_cm))
+    return True
+
+
+def _replace_image_placeholders_in_paragraphs(
+    paragraphs,
+    signatures: dict[str, str],
+    *,
+    width_cm: float = _DEFAULT_SIGNATURE_WIDTH_CM,
+) -> list[str]:
+    """Возвращает ключи меток, для которых не удалось вставить изображение."""
+    missing: list[str] = []
+    for paragraph in paragraphs:
+        text = paragraph.text or ""
+        for m in IMAGE_PLACEHOLDER_RE.finditer(text):
+            key = m.group(1)
+            raw = signatures.get(key, "")
+            image_bytes = _decode_base64_image(raw)
+            if image_bytes:
+                if not _replace_image_placeholder_in_paragraph(
+                    paragraph, key=key, image_bytes=image_bytes, width_cm=width_cm
+                ):
+                    missing.append(key)
+            else:
+                # Нет данных — убираем метку, абзац оставляем пустым.
+                placeholder = f"{{{{IMAGE:{key}}}}}"
+                if placeholder in text:
+                    _set_paragraph_text_preserve_first_run_style(
+                        paragraph, text.replace(placeholder, "")
+                    )
+                missing.append(key)
+    return missing
+
+
+def replace_image_placeholders(
+    doc: Document,
+    opop_data: dict[str, Any],
+    *,
+    width_cm: float = _DEFAULT_SIGNATURE_WIDTH_CM,
+) -> list[str]:
+    """
+    Заменяет {{IMAGE:key}} на картинку из employee_signatures[key] (base64).
+    Возвращает ключи, для которых картинка не была вставлена.
+    """
+    signatures = get_employee_signatures(opop_data)
+    if not signatures:
+        return []
+
+    missing: list[str] = []
+    missing.extend(
+        _replace_image_placeholders_in_paragraphs(
+            doc.paragraphs, signatures, width_cm=width_cm
+        )
+    )
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                missing.extend(
+                    _replace_image_placeholders_in_paragraphs(
+                        cell.paragraphs, signatures, width_cm=width_cm
+                    )
+                )
+    return sorted(set(missing))
+
+
+def scan_image_template_keys(template_path: str | Path) -> list[str]:
+    """Список ключей {{IMAGE:...}} в шаблоне (по XML, как для MANUAL)."""
+    template_path = Path(template_path)
+    if not template_path.exists():
+        return []
+    seen: set[str] = set()
+    keys: list[str] = []
+    try:
+        with zipfile.ZipFile(template_path) as zf:
+            for name in zf.namelist():
+                if not name.startswith("word/") or not name.endswith(".xml"):
+                    continue
+                if "media" in name:
+                    continue
+                try:
+                    xml = zf.read(name).decode("utf-8")
+                except Exception:
+                    continue
+                for m in IMAGE_PLACEHOLDER_RE.finditer(xml):
+                    k = m.group(1)
+                    if k not in seen:
+                        seen.add(k)
+                        keys.append(k)
+    except (OSError, zipfile.BadZipFile):
+        return []
+    return keys
 
 
 def scan_manual_template_keys(template_path: str | Path) -> list[str]:
@@ -480,14 +854,22 @@ def replace_manual_placeholders_in_tables(doc: Document, manual: dict[str, str])
 def replace_manual_placeholders(doc: Document, manual: dict[str, Any]) -> None:
     if not isinstance(manual, dict):
         return
-    flat: dict[str, str] = {str(k): ("" if v is None else str(v)) for k, v in manual.items()}
+    flat: dict[str, str] = {
+        str(k): _sanitize_xml_text(v) for k, v in manual.items()
+    }
     _expand_manual_rows_in_tables(doc, flat)
     replace_manual_placeholders_in_paragraphs(doc, flat)
     replace_manual_placeholders_in_tables(doc, flat)
 
 
-def fill_competencies_table(doc: Document, start_marker: str, end_marker: str, 
-                           competencies_data: list[dict]) -> None:
+def fill_competencies_table(
+    doc: Document,
+    start_marker: str,
+    end_marker: str,
+    competencies_data: list[dict],
+    *,
+    manual_prefix: str | None = None,
+) -> None:
     """
     Универсальная функция заполнения таблицы компетенций.
     
@@ -504,15 +886,34 @@ def fill_competencies_table(doc: Document, start_marker: str, end_marker: str,
         return
 
     rows_values = []
-    for comp_data in competencies_data:
+    for idx, comp_data in enumerate(competencies_data, start=1):
+        indicators_value = str(comp_data.get("indicators", ""))
+        if manual_prefix:
+            indicators_value = f"{{{{MANUAL:{manual_prefix}_{idx}_ind}}}}"
+
+        # 1‑й столбец: ручное поле категории, если задан префикс.
+        # Это позволяет при необходимости ввести одинаковый текст категории
+        # для нескольких компетенций (просто повторив значение в разных полях).
+        if manual_prefix:
+            category_value = f"{{{{MANUAL:{manual_prefix}_{idx}_cat}}}}"
+        else:
+            category_value = str(comp_data.get("category", ""))
+
         rows_values.append(
             [
-                str(comp_data.get("category", "")),
+                category_value,
                 str(comp_data.get("competence", "")),
-                str(comp_data.get("indicators", "")),
+                indicators_value,
             ]
         )
-    _replace_table_range_with_rows(target_table, template_row, template_row_index, end_row_index, rows_values)
+
+    _replace_table_range_with_rows(
+        target_table,
+        template_row,
+        template_row_index,
+        end_row_index,
+        rows_values,
+    )
 
 
 def fill_universal_competencies_table(doc: Document, competencies_string: str) -> None:
@@ -522,7 +923,8 @@ def fill_universal_competencies_table(doc: Document, competencies_string: str) -
         doc,
         start_marker="{{START_TABLE:universal}}",
         end_marker="{{END_TABLE:universal}}",
-        competencies_data=competencies_data
+        competencies_data=competencies_data,
+        manual_prefix="uk",
     )
 
 
@@ -533,7 +935,8 @@ def fill_professional_competencies_table(doc: Document, competencies_string: str
         doc,
         start_marker="{{START_TABLE:professional}}",
         end_marker="{{END_TABLE:professional}}",
-        competencies_data=competencies_data
+        competencies_data=competencies_data,
+        manual_prefix="opk",
     )
 
 
@@ -687,7 +1090,7 @@ def fill_pk_table(doc: Document, opop_data: dict[str, Any]) -> None:
             r["task_type_key"] = activity_map.get(str(r.get("task_type", "")).strip(), "")
 
     # Новый режим: отдельные секции PK под каждым типом задач.
-    # В секции заполняем: col3=ПК (код+наименование), col4=индикаторы.
+    # col1,col2,col5 — MANUAL как категории ОПК; col3 из БД; col4 — MANUAL как индикаторы ОПК.
     grouped: dict[str, list[dict[str, str]]] = {}
     for r in rows:
         key = r.get("task_type_key", "")
@@ -704,29 +1107,40 @@ def fill_pk_table(doc: Document, opop_data: dict[str, Any]) -> None:
             code = i.get("pk_code", "")
             desc = i.get("pk_description", "")
             pk_text = f"{code} - {desc}".strip(" -")
-            # 5 колонок таблицы на скрине: 1/2/5 пока пустые.
-            section_rows.append(["", "", pk_text, i.get("indicators", ""), ""])
+            row_idx = len(section_rows) + 1
+            section_rows.append(
+                [
+                    f"{{{{MANUAL:pk_{key}_{row_idx}_cat1}}}}",
+                    f"{{{{MANUAL:pk_{key}_{row_idx}_cat2}}}}",
+                    pk_text,
+                    f"{{{{MANUAL:pk_{key}_{row_idx}_ind}}}}",
+                    f"{{{{MANUAL:pk_{key}_{row_idx}_cat5}}}}",
+                ]
+            )
         ok = _fill_table_section_rows(doc, start, end, section_rows)
         used_sectional = used_sectional or ok
 
     if used_sectional:
         return
 
-    # Совместимость со старым единым маркером.
+    # Совместимость со старым единым маркером (шаблон с 5 столбцами).
     start_marker = "{{START_TABLE:pk}}"
     end_marker = "{{END_TABLE:pk}}"
-    # Группируем по task_type: первый столбец заполняем только у первой строки группы.
     rows_values: list[list[str]] = []
-    prev_task_type = None
     for r in rows:
-        task_type = r.get("task_type", "")
-        col_task_type = task_type if task_type != prev_task_type else ""
         code = r.get("pk_code", "")
         desc = r.get("pk_description", "")
         pk_text = f"{code} - {desc}".strip(" -")
-        indicators = r.get("indicators", "")
-        rows_values.append([col_task_type, pk_text, indicators])
-        prev_task_type = task_type
+        row_idx = len(rows_values) + 1
+        rows_values.append(
+            [
+                f"{{{{MANUAL:pk_{row_idx}_cat1}}}}",
+                f"{{{{MANUAL:pk_{row_idx}_cat2}}}}",
+                pk_text,
+                f"{{{{MANUAL:pk_{row_idx}_ind}}}}",
+                f"{{{{MANUAL:pk_{row_idx}_cat5}}}}",
+            ]
+        )
 
     if not _fill_table_section_rows(doc, start_marker, end_marker, rows_values):
         print(f"Предупреждение: не найдена таблица с маркерами {start_marker} / {end_marker}")
@@ -789,9 +1203,27 @@ def generate_opop_document(
         "prof_standards_table",
         "pk_table",
         "manual_fields",
+        "employee_signatures",
+        "_api_snapshot",
+        "_manual_fields_seed",
+        "_missing_fields",
+        "_missing_fields_text",
+        "_source_export_time",
+        "_generated_at",
     }
-    simple_data = {k: v for k, v in opop_data.items() if k not in excluded_keys and isinstance(v, str)}
+    simple_data = {
+        k: _sanitize_xml_text(v)
+        for k, v in opop_data.items()
+        if k not in excluded_keys and isinstance(v, str)
+    }
     replace_placeholders(doc, simple_data)
+
+    missing_images = replace_image_placeholders(doc, opop_data)
+    if missing_images:
+        print(
+            "Предупреждение: не вставлены подписи для меток IMAGE: "
+            + ", ".join(missing_images)
+        )
     
     # 2. Заполняем динамические таблицы
     if "universal_competencies" in opop_data:
@@ -810,6 +1242,8 @@ def generate_opop_document(
     # Ручные поля: {{MANUAL:key}} — подставляем после таблиц (можно отключить для черновика).
     if not skip_manual_replace:
         replace_manual_placeholders(doc, opop_data.get("manual_fields", {}))
+        _merge_competencies_category_column_after_manual(doc)
+        _merge_pk_manual_category_columns_after_manual(doc)
 
     # Единый шрифт для всего документа: Times New Roman.
     enforce_times_new_roman(doc)

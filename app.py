@@ -23,12 +23,49 @@ from flask import Flask, abort, flash, redirect, render_template, request, send_
 _MANUAL_HTML_RE = re.compile(r"\{\{MANUAL:([a-zA-Z0-9_]+)\}\}")
 
 
+def _is_multirow_manual_key(key: str) -> bool:
+    """
+    Ключи табличного ручного ввода, для которых в UI даём режим +/-
+    (каждый input = отдельная строка таблицы).
+    """
+    return bool(re.fullmatch(r"(?:ps|uk|opk|pk)_[a-zA-Z0-9_]+", key))
+
+
 def _inject_manual_fields_into_html(html: str, manual_fields: dict[str, str]) -> str:
     """Заменяет в HTML текстовые {{MANUAL:key}} на поля ввода."""
 
     def repl(m: re.Match[str]) -> str:
         key = m.group(1)
         val = manual_fields.get(key, "") or ""
+        # Для табличных ключей удобнее вводить построчно: каждая строка ввода
+        # превращается в отдельную строку таблицы
+        # (см. generate_opop._expand_manual_rows_in_tables).
+        if _is_multirow_manual_key(key):
+            lines = val.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            if not lines:
+                lines = [""]
+
+            rows_html: list[str] = []
+            for line in lines:
+                esc_line = html_lib.escape(line)
+                rows_html.append(
+                    "<div class=\"manual-multi-row d-flex gap-1 align-items-start my-1\">"
+                    f"<input class=\"form-control manual-field manual-field-line\" "
+                    f"name=\"manual_{key}\" value=\"{esc_line}\" "
+                    "style=\"min-width: 14rem;\" />"
+                    "<button class=\"btn btn-outline-secondary btn-sm manual-add-line\" "
+                    "type=\"button\" title=\"Добавить строку\">+</button>"
+                    "<button class=\"btn btn-outline-danger btn-sm manual-remove-line\" "
+                    "type=\"button\" title=\"Удалить строку\">−</button>"
+                    "</div>"
+                )
+
+            return (
+                f"<div class=\"manual-multi\" data-manual-key=\"{html_lib.escape(key)}\">"
+                + "".join(rows_html)
+                + "</div>"
+            )
+
         esc = html_lib.escape(val)
         return (
             f'<textarea class="form-control manual-field my-1" name="manual_{key}" '
@@ -37,9 +74,16 @@ def _inject_manual_fields_into_html(html: str, manual_fields: dict[str, str]) ->
 
     return _MANUAL_HTML_RE.sub(repl, html)
 
-from generate_opop import generate_opop_document, scan_manual_template_keys
-from opop_data_extractor import ExtractParams, build_opop_data
-from sql_processor import SQLProcessor
+from api_export import save_and_post_export
+from generate_opop import generate_opop_document, scan_manual_template_keys, _sanitize_xml_text
+from json_data_extractor import (
+    ExtractParams,
+    build_opop_data,
+    fetch_db_json,
+    get_specialities,
+    load_db_json_file,
+    resolve_api_get_json_url,
+)
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -75,52 +119,10 @@ def _cleanup_old_dirs(base: Path, *, older_than_hours: int = 12) -> None:
 def _secure_filename(name: str) -> str:
     name = (name or "").strip()
     if not name:
-        return "upload.sql"
+        return "db.json"
     for ch in ('"', "'", "\\", "/", ":", "*", "?", "<", ">", "|"):
         name = name.replace(ch, "_")
     return name[:180]
-
-
-def _load_db_from_sql(structure_sql_path: Path, data_sql_path: Path) -> SQLProcessor:
-    processor = SQLProcessor()
-    ok, msg = processor.load_sql_file(str(structure_sql_path))
-    if not ok:
-        processor.close()
-        raise RuntimeError(f"Не удалось загрузить структуру SQL: {msg}")
-    ok, msg = processor.load_sql_file(str(data_sql_path))
-    if not ok:
-        processor.close()
-        raise RuntimeError(f"Не удалось загрузить данные SQL: {msg}")
-    return processor
-
-
-def _get_options(structure_sql_path: Path, data_sql_path: Path) -> dict[str, Any]:
-    processor = _load_db_from_sql(structure_sql_path, data_sql_path)
-    cur = processor.conn.cursor()
-    try:
-        cur.execute("SELECT id, title FROM edu_levels ORDER BY id")
-        levels = [{"id": int(r[0]), "title": str(r[1])} for r in (cur.fetchall() or [])]
-
-        cur.execute(
-            """
-            SELECT edu_level_id, code, title, profile
-            FROM speciality
-            ORDER BY edu_level_id, code
-            """
-        )
-        dirs_by_level: dict[int, list[dict[str, str]]] = {}
-        for r in cur.fetchall() or []:
-            lvl = int(r[0])
-            dirs_by_level.setdefault(lvl, []).append(
-                {
-                    "code": str(r[1]),
-                    "title": str(r[2]),
-                    "profile": str(r[3] or ""),
-                }
-            )
-        return {"levels": levels, "dirs_by_level": dirs_by_level}
-    finally:
-        processor.close()
 
 
 def _job_dir(job_id: str) -> Path:
@@ -298,32 +300,42 @@ def create_app() -> Flask:
 
     @app.post("/upload")
     def upload():
-        structure = request.files.get("sql_structure")
-        data = request.files.get("sql_content")
-        if not structure or not data:
-            flash("Нужно загрузить два файла: структуру и данные (SQL).", "danger")
+        json_url = resolve_api_get_json_url(APP_ROOT / "opop_defaults.json")
+        if not json_url:
+            flash(
+                "URL загрузки данных не задан (opop_defaults.json → api_get_json_url "
+                "или OPOP_API_GET_JSON_URL).",
+                "danger",
+            )
             return redirect(url_for("index"))
 
         upload_id = str(uuid.uuid4())
         udir = _upload_dir(upload_id)
         udir.mkdir(parents=True, exist_ok=True)
 
-        structure_name = _secure_filename(structure.filename or "structure.sql")
-        data_name = _secure_filename(data.filename or "data.sql")
+        try:
+            payload = fetch_db_json(json_url, method="GET")
+        except Exception as e:
+            shutil.rmtree(udir, ignore_errors=True)
+            flash(f"Не удалось загрузить данные: {e}", "danger")
+            return redirect(url_for("index"))
 
-        structure_path = udir / structure_name
-        data_path = udir / data_name
-        structure.save(structure_path)
-        data.save(data_path)
+        json_path = udir / "db.json"
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        specialities = get_specialities(payload)
+        if not specialities:
+            shutil.rmtree(udir, ignore_errors=True)
+            flash("В JSON не найдены направления подготовки (таблица speciality / title_plan).", "danger")
+            return redirect(url_for("index"))
 
         meta = {
             "upload_id": upload_id,
-            "structure_path": str(structure_path),
-            "data_path": str(data_path),
+            "json_path": str(json_path),
+            "source_kind": "api",
+            "source_ref": "get_json.php",
             "uploaded_at": _now_utc().isoformat(),
         }
         (udir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-
         return redirect(url_for("select_params", upload_id=upload_id))
 
     @app.get("/select/<upload_id>")
@@ -333,20 +345,17 @@ def create_app() -> Flask:
         if not meta_path.exists():
             abort(404)
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        structure_path = Path(meta["structure_path"])
-        data_path = Path(meta["data_path"])
-
+        source_json_path = Path(meta["json_path"])
         try:
-            options = _get_options(structure_path, data_path)
+            payload = load_db_json_file(source_json_path)
+            specialities = get_specialities(payload)
         except Exception as e:
-            flash(f"Ошибка при чтении SQL для формирования списков: {e}", "danger")
+            flash(f"Ошибка при чтении JSON для формирования списка направлений: {e}", "danger")
             return redirect(url_for("index"))
-
         return render_template(
             "select.html",
             upload_id=upload_id,
-            levels=options["levels"],
-            dirs_by_level=options["dirs_by_level"],
+            specialities=specialities,
             default_year=2023,
         )
 
@@ -356,21 +365,21 @@ def create_app() -> Flask:
         meta_path = udir / "meta.json"
         if not meta_path.exists():
             abort(404)
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        structure_path = Path(meta["structure_path"])
-        data_path = Path(meta["data_path"])
+        upload_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        source_json_path = Path(upload_meta["json_path"])
 
         try:
             year = int(request.form.get("year", "2023"))
-            edu_level_id = int(request.form.get("edu_level_id", "1"))
-            speciality_code = str(request.form.get("speciality_code", "")).strip()
+            speciality_id = int(request.form.get("speciality_id", "0"))
         except Exception:
             flash("Некорректные параметры формы.", "danger")
             return redirect(url_for("select_params", upload_id=upload_id))
-
-        if not speciality_code:
-            flash("Выберите направление (код).", "danger")
+        if speciality_id <= 0:
+            flash("Выберите направление подготовки.", "danger")
             return redirect(url_for("select_params", upload_id=upload_id))
+
+        extract_params = ExtractParams(speciality_id=speciality_id, year=year)
+        job_params_dict = asdict(extract_params)
 
         template_path = APP_ROOT / "template.docx"
         if not template_path.exists():
@@ -392,22 +401,21 @@ def create_app() -> Flask:
         pdf_preview_path = jdir / "preview.pdf"
 
         try:
-            opop_data = build_opop_data(
-                str(structure_path),
-                str(data_path),
-                params=ExtractParams(year=year, speciality_code=speciality_code, edu_level_id=edu_level_id),
-            )
+            payload = load_db_json_file(source_json_path)
+            opop_data = build_opop_data(payload, params=extract_params)
             manual_keys = scan_manual_template_keys(template_path)
             mf: dict[str, str] = {}
             if isinstance(opop_data.get("manual_fields"), dict):
                 mf = {str(k): str(v or "") for k, v in opop_data["manual_fields"].items()}
+            seed = opop_data.get("_manual_fields_seed")
+            if not isinstance(seed, dict):
+                seed = {}
             for k in manual_keys:
-                mf.setdefault(k, "")
+                mf.setdefault(k, str(seed.get(k, "") or ""))
             opop_data["manual_fields"] = mf
             json_path.write_text(json.dumps(opop_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
             if not manual_keys:
-                # Нет ручных меток — сразу финальный документ и предпросмотр.
                 generate_opop_document(
                     template_path=template_path,
                     data_path=json_path,
@@ -424,9 +432,7 @@ def create_app() -> Flask:
                     "job_id": job_id,
                     "upload_id": upload_id,
                     "created_at": _now_utc().isoformat(),
-                    "params": asdict(
-                        ExtractParams(year=year, speciality_code=speciality_code, edu_level_id=edu_level_id)
-                    ),
+                    "params": job_params_dict,
                     "json_path": str(json_path),
                     "draft_docx_path": str(draft_docx_path),
                     "docx_path": str(docx_path),
@@ -460,9 +466,7 @@ def create_app() -> Flask:
                 "job_id": job_id,
                 "upload_id": upload_id,
                 "created_at": _now_utc().isoformat(),
-                "params": asdict(
-                    ExtractParams(year=year, speciality_code=speciality_code, edu_level_id=edu_level_id)
-                ),
+                "params": job_params_dict,
                 "json_path": str(json_path),
                 "draft_docx_path": str(draft_docx_path),
                 "docx_path": str(docx_path),
@@ -502,11 +506,25 @@ def create_app() -> Flask:
             manual_key = form_key[len(prefix) :]
             if not manual_key:
                 continue
-            mf[manual_key] = request.form.get(form_key, "") or ""
+            # Поддерживаем множественные значения одного и того же ключа (getlist),
+            # которые UI может отправить при "добавлении строк" в таблицах.
+            vals = request.form.getlist(form_key)
+            if len(vals) > 1:
+                raw = "\n".join((v or "") for v in vals)
+            else:
+                raw = request.form.get(form_key, "") or ""
+            mf[manual_key] = _sanitize_xml_text(raw)
 
         # 2) Для заранее найденных ключей гарантируем наличие значения.
         for k in manual_keys:
-            mf.setdefault(k, request.form.get(f"manual_{k}", "") or "")
+            if k in mf:
+                continue
+            vals = request.form.getlist(f"manual_{k}")
+            if len(vals) > 1:
+                raw = "\n".join((v or "") for v in vals)
+            else:
+                raw = request.form.get(f"manual_{k}", "") or ""
+            mf[k] = _sanitize_xml_text(raw)
         opop_data["manual_fields"] = mf
 
     @app.get("/edit/<job_id>")
@@ -581,10 +599,30 @@ def create_app() -> Flask:
             flash(f"Ошибка при создании документа: {e}", "danger")
             return redirect(url_for("edit_manual", job_id=job_id))
 
+        try:
+            export_path, api_ok, api_message = save_and_post_export(
+                opop_data, jdir, defaults_path=APP_ROOT / "opop_defaults.json"
+            )
+            meta["api_export_path"] = str(export_path)
+            meta["api_export_ok"] = api_ok
+            meta["api_export_message"] = api_message
+        except Exception as e:
+            meta["api_export_ok"] = False
+            meta["api_export_message"] = str(e)
+
         meta["stage"] = "final"
         meta["pdf_error"] = None
         (jdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        flash("Документ сформирован. При необходимости создайте PDF отдельной кнопкой.", "success")
+
+        if meta.get("api_export_ok"):
+            flash("Документ сохранён. Данные отправлены в API.", "success")
+        elif meta.get("api_export_message"):
+            flash(
+                f"Документ сохранён, но отправка в API не выполнена: {meta.get('api_export_message')}",
+                "warning",
+            )
+        else:
+            flash("Документ сформирован. При необходимости создайте PDF отдельной кнопкой.", "success")
         return redirect(url_for("preview", job_id=job_id))
 
     @app.get("/preview/<job_id>")
@@ -609,11 +647,16 @@ def create_app() -> Flask:
         if html_preview_path.exists():
             preview_html = html_preview_path.read_text(encoding="utf-8")
 
+        missing_fields = opop_data.get("_missing_fields")
+        if not isinstance(missing_fields, list):
+            missing_fields = []
+
         return render_template(
             "preview.html",
             job_id=job_id,
             opop_data=opop_data,
             params=meta["params"],
+            missing_fields=missing_fields,
             preview_html=preview_html,
             has_pdf_preview=pdf_preview_path.exists(),
             pdf_error=meta.get("pdf_error"),

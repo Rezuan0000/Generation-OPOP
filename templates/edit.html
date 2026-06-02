@@ -10,8 +10,7 @@
             <div>
               <div class="fs-4 fw-semibold">Ввод текста по меткам шаблона</div>
               <div class="opacity-75 small mt-1">
-                Код: <span class="mono">{{ params.speciality_code }}</span>,
-                уровень: <span class="mono">{{ params.edu_level_id }}</span>,
+                ID направления: <span class="mono">{{ params.speciality_id }}</span>,
                 год: <span class="mono">{{ params.year }}</span>
               </div>
             </div>
@@ -22,7 +21,7 @@
         <div class="p-4 p-lg-5">
           <div class="small text-muted mb-3">
             Ниже — HTML-предпросмотр документа. В местах меток <span class="mono">{% raw %}{{MANUAL:ключ}}{% endraw %}</span> показаны поля ввода.
-            После заполнения нажмите «Создать документ» — будет сформирован итоговый Word и страница скачивания.
+            После заполнения нажмите «Сохранить документ» — будет сформирован Word, JSON для API и отправка на сервер.
           </div>
 
           <form method="post" action="{{ url_for('edit_manual_post', job_id=job_id) }}">
@@ -35,18 +34,67 @@
               }
               .edit-preview-html img { max-width: 100%; height: auto; }
               .manual-field { font-family: inherit; font-size: 0.95rem; }
+              .manual-field-line { font-family: inherit; font-size: 0.95rem; }
+              .manual-multi-row .btn { line-height: 1; padding: 0.15rem 0.45rem; }
             </style>
 
             <div class="border rounded-3 p-3 bg-white overflow-auto edit-preview-html mb-4">
               {{ preview_html | safe }}
             </div>
 
+            <script>
+              (function () {
+                function closest(el, sel) {
+                  while (el && el.nodeType === 1) {
+                    if (el.matches(sel)) return el;
+                    el = el.parentElement;
+                  }
+                  return null;
+                }
+
+                document.addEventListener("click", function (e) {
+                  var addBtn = closest(e.target, ".manual-add-line");
+                  if (addBtn) {
+                    e.preventDefault();
+                    var row = closest(addBtn, ".manual-multi-row");
+                    if (!row) return;
+                    var input = row.querySelector("input[name^='manual_']");
+                    if (!input) return;
+
+                    var newRow = row.cloneNode(true);
+                    var newInput = newRow.querySelector("input[name^='manual_']");
+                    if (newInput) newInput.value = "";
+
+                    row.insertAdjacentElement("afterend", newRow);
+                    if (newInput) newInput.focus();
+                    return;
+                  }
+
+                  var rmBtn = closest(e.target, ".manual-remove-line");
+                  if (rmBtn) {
+                    e.preventDefault();
+                    var row2 = closest(rmBtn, ".manual-multi-row");
+                    var wrap = closest(rmBtn, ".manual-multi");
+                    if (!row2 || !wrap) return;
+                    var rows = wrap.querySelectorAll(".manual-multi-row");
+                    if (rows.length <= 1) {
+                      // Оставляем хотя бы одну строку ввода
+                      var inp = row2.querySelector("input[name^='manual_']");
+                      if (inp) inp.value = "";
+                      return;
+                    }
+                    row2.remove();
+                  }
+                });
+              })();
+            </script>
+
             <div class="d-flex flex-wrap gap-2 justify-content-between">
               <button class="btn btn-outline-primary" type="submit" name="action" value="preview">
                 Обновить предпросмотр
               </button>
               <button class="btn btn-success px-4" type="submit" name="action" value="finalize">
-                Создать документ
+                Сохранить документ
               </button>
             </div>
           </form>
